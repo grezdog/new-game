@@ -1,0 +1,677 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Angry Rabbits: Carrot Clash</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#e9f3ff;color:#263747;font-family:Arial,sans-serif;text-align:center}
+header{padding:12px}
+h1{margin:4px;color:#397d37;font-size:clamp(25px,4vw,38px)}
+p{margin:7px;color:#45576b}
+button{margin:5px;padding:10px 16px;border:0;border-radius:7px;background:#4d963f;color:white;font-weight:bold;cursor:pointer}
+button:hover{background:#36772e}
+canvas{display:block;width:min(100%,1100px);height:auto;margin:auto;border:2px solid #7aa4bd;border-radius:8px;touch-action:none}
+#status{min-height:22px;color:#356c32;font-weight:bold}
+</style>
+</head>
+<body>
+<header>
+<h1>🐰 ANGRY RABBITS: CARROT CLASH 🥕</h1>
+<p>Drag a rabbit backward, line up your shot, and knock the hawks out of their towers!</p>
+<div id="status">The hawks have taken over the carrot towers!</div>
+<button onclick="resetGame()">Restart Level</button>
+<button onclick="nextLevel()">Next Level</button>
+</header>
+
+<canvas id="game" width="1100" height="600"></canvas>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const statusText=document.getElementById("status");
+
+const G=0.34;
+const GROUND=490;
+const SLING={x:175,y:405};
+const POWER=0.19;
+const MAX_PULL=100;
+
+let rabbits=[],blocks=[],hawks=[];
+let level=0,dragging=false,active=null;
+let shots=0,won=false,gameOver=false;
+let lastTime=0;
+let dialogue="",speaker="Rabbit",dialogueUntil=0;
+let lastRabbitLine=-1,lastHawkLine=-1;
+
+const levelLayouts=[
+ [{x:635,width:145},{x:850,width:145}],
+ [{x:555,width:140},{x:760,width:140},{x:950,width:120}],
+ [{x:500,width:140},{x:700,width:140},{x:900,width:140}]
+];
+
+const rabbitLines=[
+ "That carrot tower needs a makeover!",
+ "Ready, set, RABBIT!",
+ "I have a very solid plan. Mostly.",
+ "Somebody move those carrots!",
+ "I meant to aim there!",
+ "This is going surprisingly well!",
+ "Time for a little tower trouble!",
+ "Carrots first, questions later!",
+ "Watch this amazing launch!",
+ "I practiced that. Probably."
+];
+
+const hawkLines=[
+ "Nobody touches our carrots!",
+ "Hey! We built that tower!",
+ "You call that an aim?",
+ "Guard the middle floors!",
+ "That rabbit is trouble!",
+ "Protect the carrot supply!",
+ "Our tower is wobbling!",
+ "Why are there rabbits everywhere?",
+ "Everyone stay on your level!",
+ "This was not in the job description!"
+];
+
+function randomLine(lines,last){
+ let n=Math.floor(Math.random()*lines.length);
+ if(lines.length>1&&n===last)n=(n+1)%lines.length;
+ return n;
+}
+
+function say(text,who="Rabbit",duration=2300){
+ dialogue=text;
+ speaker=who;
+ dialogueUntil=performance.now()+duration;
+}
+
+function resetGame(){
+ rabbits=[];blocks=[];hawks=[];
+ dragging=false;active=null;
+ shots=0;won=false;gameOver=false;
+ lastRabbitLine=-1;lastHawkLine=-1;
+
+ rabbits.push({
+  x:SLING.x,y:SLING.y,vx:0,vy:0,r:19,
+  flying:false,alive:true,used:false
+ });
+
+ for(const tower of levelLayouts[level]){
+  buildTower(tower.x,tower.width);
+ }
+
+ statusText.textContent="Level "+(level+1)+": Knock out every hawk!";
+ say("Let's see how sturdy those towers really are!","Rabbit",2600);
+}
+
+function buildTower(x,width){
+ // Three levels tall, with open centers for hawks.
+ // Every level has sturdy side supports and split crossbeams.
+ const floorY=GROUND;
+ const levelHeight=58;
+ const sideW=30;
+ const beamH=16;
+ const gap=42;
+ const left=x;
+ const right=x+width-sideW;
+ const center=x+width/2;
+
+ for(let row=0;row<3;row++){
+  const baseY=floorY-(row+1)*levelHeight;
+
+  // Side supports
+  addBlock(left,baseY,sideW,levelHeight-3,"wood");
+  addBlock(right,baseY,sideW,levelHeight-3,"wood");
+
+  // Split crossbeam leaves an opening in the middle
+  const innerLeft=left+sideW;
+  const innerRight=right;
+  const available=innerRight-innerLeft;
+  const half=(available-gap)/2;
+
+  if(half>10){
+   addBlock(innerLeft,baseY,half,beamH,"wood");
+   addBlock(innerLeft+half+gap,baseY,half,beamH,"wood");
+  }
+
+  // Small carrot decorations along the sides
+  addBlock(left-5,baseY+levelHeight-29,10,24,"carrot");
+  addBlock(right+sideW-5,baseY+levelHeight-29,10,24,"carrot");
+
+  // Two hawks in each tower, occupying the open space on different levels.
+  // Hawks are targets rather than solid tower supports.
+  if(row===0||row===1){
+   hawks.push({
+    x:center,y:baseY+levelHeight*.55,
+    vx:0,vy:0,r:16,alive:true,
+    towerX:x
+   });
+  }
+ }
+
+ // Roof supports and carrot decoration
+ addBlock(left-5,floorY-3*levelHeight-13,sideW+5,13,"wood");
+ addBlock(right,floorY-3*levelHeight-13,sideW+5,13,"wood");
+
+ blocks.push({
+  x:center-12,y:floorY-3*levelHeight-34,w:24,h:22,
+  vx:0,vy:0,angle:0,alive:true,settled:true,
+  type:"carrot",hp:1
+ });
+}
+
+function addBlock(x,y,w,h,type){
+ blocks.push({
+  x,y,w,h,vx:0,vy:0,angle:0,
+  alive:true,settled:true,type,hp:type==="wood"?3:1
+ });
+}
+
+function nextLevel(){
+ level=(level+1)%levelLayouts.length;
+ resetGame();
+}
+
+function background(){
+ const sky=ctx.createLinearGradient(0,0,0,GROUND);
+ sky.addColorStop(0,"#65c2ff");
+ sky.addColorStop(1,"#e4f7ff");
+ ctx.fillStyle=sky;
+ ctx.fillRect(0,0,1100,600);
+
+ // Sun
+ ctx.fillStyle="#ffe18a";
+ ctx.beginPath();ctx.arc(940,80,42,0,Math.PI*2);ctx.fill();
+
+ // Clouds
+ for(const c of [{x:130,y:90,s:1},{x:460,y:145,s:.8},{x:780,y:90,s:.7}]){
+  ctx.fillStyle="rgba(255,255,255,.93)";
+  ctx.beginPath();
+  ctx.arc(c.x,c.y,22*c.s,0,Math.PI*2);
+  ctx.arc(c.x+25*c.s,c.y-12*c.s,29*c.s,0,Math.PI*2);
+  ctx.arc(c.x+52*c.s,c.y,21*c.s,0,Math.PI*2);
+  ctx.fill();
+ }
+
+ // Hills
+ ctx.fillStyle="#a5d999";
+ ctx.beginPath();
+ ctx.moveTo(0,390);
+ ctx.quadraticCurveTo(180,275,370,390);
+ ctx.quadraticCurveTo(600,270,800,390);
+ ctx.quadraticCurveTo(980,290,1100,370);
+ ctx.lineTo(1100,GROUND);ctx.lineTo(0,GROUND);ctx.fill();
+
+ ctx.fillStyle="#79bd66";
+ for(let x=20;x<1100;x+=90){
+  ctx.beginPath();ctx.arc(x,470,27,Math.PI,Math.PI*2);ctx.fill();
+ }
+
+ // Ground
+ ctx.fillStyle="#78c44f";ctx.fillRect(0,GROUND,1100,110);
+ ctx.fillStyle="#4d9d3c";ctx.fillRect(0,GROUND,1100,8);
+
+ ctx.strokeStyle="#539b3b";ctx.lineWidth=2;
+ for(let i=0;i<95;i++){
+  const x=(i*137+17)%1100;
+  const y=GROUND+12+(i*29)%80;
+  ctx.beginPath();ctx.moveTo(x,y+4);ctx.lineTo(x-3,y-2);ctx.stroke();
+ }
+ ctx.fillStyle="#b78955";ctx.fillRect(0,GROUND+90,1100,20);
+}
+
+function drawSlingshot(){
+ ctx.lineCap="round";
+ ctx.strokeStyle="#87552e";ctx.lineWidth=14;
+ ctx.beginPath();
+ ctx.moveTo(SLING.x,GROUND);
+ ctx.lineTo(SLING.x,405);
+ ctx.lineTo(150,375);
+ ctx.moveTo(SLING.x,405);
+ ctx.lineTo(198,375);
+ ctx.stroke();
+
+ ctx.strokeStyle="#b98149";ctx.lineWidth=4;
+ ctx.beginPath();ctx.moveTo(175,445);ctx.lineTo(175,410);ctx.stroke();
+
+ if(dragging&&active){
+  ctx.strokeStyle="#70514a";ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(150,375);ctx.lineTo(active.x,active.y);
+  ctx.moveTo(198,375);ctx.lineTo(active.x,active.y);
+  ctx.stroke();
+ }
+}
+
+function drawRabbit(r){
+ if(!r.alive)return;
+ ctx.save();
+ ctx.translate(r.x,r.y);
+ if(r.flying)ctx.rotate(Math.atan2(r.vy,r.vx)*.12);
+
+ ctx.fillStyle="#e6e1d7";
+ ctx.beginPath();
+ ctx.ellipse(-8,-23,7,17,-.2,0,Math.PI*2);
+ ctx.ellipse(8,-24,7,17,.2,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#e8a7af";
+ ctx.beginPath();
+ ctx.ellipse(-8,-24,3,11,-.2,0,Math.PI*2);
+ ctx.ellipse(8,-25,3,11,.2,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#e6e1d7";
+ ctx.beginPath();ctx.ellipse(0,5,19,18,0,0,Math.PI*2);ctx.fill();
+ ctx.beginPath();ctx.arc(0,-8,15,0,Math.PI*2);ctx.fill();
+
+ ctx.fillStyle="#282c31";
+ ctx.beginPath();
+ ctx.arc(-6,-10,2.5,0,Math.PI*2);
+ ctx.arc(6,-10,2.5,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#e58a9c";
+ ctx.beginPath();ctx.arc(0,-3,3,0,Math.PI*2);ctx.fill();
+
+ ctx.fillStyle="#d1cbd0";
+ ctx.beginPath();
+ ctx.ellipse(-10,19,8,4,0,0,Math.PI*2);
+ ctx.ellipse(10,19,8,4,0,0,Math.PI*2);
+ ctx.fill();
+ ctx.restore();
+}
+
+function drawBlock(b){
+ if(!b.alive)return;
+ ctx.save();
+ ctx.translate(b.x+b.w/2,b.y+b.h/2);
+ ctx.rotate(b.angle);
+
+ if(b.type==="carrot"){
+  ctx.fillStyle="#ff8c27";
+  ctx.beginPath();
+  ctx.moveTo(-b.w/2,-b.h/2);
+  ctx.lineTo(b.w/2,-b.h/2);
+  ctx.lineTo(b.w/2-4,b.h/2);
+  ctx.lineTo(-b.w/2+4,b.h/2);
+  ctx.closePath();ctx.fill();
+  ctx.strokeStyle="#ffd078";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(-3,-3);ctx.lineTo(1,2);ctx.stroke();
+ }else{
+  ctx.fillStyle="#a87543";
+  ctx.fillRect(-b.w/2,-b.h/2,b.w,b.h);
+  ctx.strokeStyle="#754a2b";ctx.lineWidth=2;
+  ctx.strokeRect(-b.w/2,-b.h/2,b.w,b.h);
+  ctx.beginPath();
+  ctx.moveTo(-b.w/2+4,0);ctx.lineTo(b.w/2-4,0);
+  ctx.stroke();
+  ctx.fillStyle="#d9ad76";
+  ctx.fillRect(-b.w/2+5,-b.h/2+5,4,4);
+ }
+ ctx.restore();
+}
+
+function drawHawk(h){
+ if(!h.alive)return;
+ const flap=Math.sin(performance.now()*.012)*8;
+ ctx.save();ctx.translate(h.x,h.y);
+
+ ctx.fillStyle="#665c50";
+ ctx.beginPath();
+ ctx.ellipse(-14,-5,14,6,-.4-flap*.02,0,Math.PI*2);
+ ctx.ellipse(14,-5,14,6,.4+flap*.02,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#786a57";
+ ctx.beginPath();ctx.ellipse(0,2,17,14,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle="#a8997d";
+ ctx.beginPath();ctx.arc(0,-8,12,0,Math.PI*2);ctx.fill();
+
+ ctx.fillStyle="#202020";
+ ctx.beginPath();
+ ctx.arc(-5,-9,2.3,0,Math.PI*2);
+ ctx.arc(5,-9,2.3,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#edb338";
+ ctx.beginPath();
+ ctx.moveTo(-4,-2);ctx.lineTo(4,-2);ctx.lineTo(0,5);
+ ctx.closePath();ctx.fill();
+
+ ctx.fillStyle="#5e5346";
+ ctx.beginPath();
+ ctx.moveTo(-6,12);ctx.lineTo(0,22);ctx.lineTo(6,12);
+ ctx.closePath();ctx.fill();
+ ctx.restore();
+}
+
+function drawAim(){
+ if(!dragging||!active)return;
+
+ // Longer trajectory preview using the same gravity and launch speed.
+ // The prediction stops at the ground.
+ const dx=SLING.x-active.x;
+ const dy=SLING.y-active.y;
+ const vx=dx*POWER;
+ const vy=dy*POWER;
+
+ ctx.save();
+ ctx.setLineDash([5,7]);
+ ctx.strokeStyle="#fff";
+ ctx.lineWidth=3;
+ ctx.shadowColor="#4286c7";
+ ctx.shadowBlur=4;
+ ctx.beginPath();
+ ctx.moveTo(active.x,active.y);
+
+ for(let t=.18;t<=5.5;t+=.18){
+  const x=active.x+vx*t;
+  const y=active.y+vy*t+.5*G*t*t;
+  if(x<0||x>1100||y>=GROUND-8||y<0)break;
+  ctx.lineTo(x,y);
+ }
+ ctx.stroke();
+ ctx.restore();
+}
+
+function drawDialogue(){
+ if(performance.now()>dialogueUntil||!dialogue)return;
+
+ // Dialogue bubble in the middle-upper part of the level
+ const x=550,y=76,w=440,h=58;
+ ctx.save();
+ ctx.fillStyle="rgba(255,255,255,.96)";
+ ctx.strokeStyle=speaker==="Hawk"?"#786a57":"#4d963f";
+ ctx.lineWidth=3;
+ ctx.beginPath();
+ ctx.roundRect(x-w/2,y-h/2,w,h,14);
+ ctx.fill();ctx.stroke();
+
+ ctx.fillStyle=speaker==="Hawk"?"#655443":"#356c32";
+ ctx.font="bold 13px Arial";
+ ctx.textAlign="center";
+ ctx.fillText(speaker.toUpperCase(),x,y-12);
+
+ ctx.fillStyle="#243746";
+ ctx.font="bold 17px Arial";
+ let text=dialogue;
+ if(ctx.measureText(text).width>w-24){
+  while(text.length>5&&ctx.measureText(text+"…").width>w-24)text=text.slice(0,-1);
+  text+="…";
+ }
+ ctx.fillText(text,x,y+14);
+ ctx.restore();
+}
+
+function draw(){
+ background();
+ drawSlingshot();
+
+ for(const b of blocks)drawBlock(b);
+ for(const h of hawks)drawHawk(h);
+ for(const r of rabbits)drawRabbit(r);
+
+ // Dotted aiming guide only while aiming; no trail after launch.
+ drawAim();
+ drawDialogue();
+
+ ctx.fillStyle="#234b31";
+ ctx.font="bold 17px Arial";
+ ctx.textAlign="left";
+ ctx.fillText("LEVEL "+(level+1),20,30);
+ ctx.fillText("SHOTS: "+shots,20,53);
+ ctx.fillText("HAWKS LEFT: "+hawks.filter(h=>h.alive).length,20,76);
+
+ if(won||gameOver){
+  ctx.fillStyle="rgba(255,255,255,.85)";
+  ctx.fillRect(0,0,1100,600);
+  ctx.textAlign="center";
+  ctx.fillStyle=won?"#357b38":"#b84d36";
+  ctx.font="bold 46px Arial";
+  ctx.fillText(won?"LEVEL CLEARED!":"TRY AGAIN!",550,260);
+  ctx.fillStyle="#263747";ctx.font="22px Arial";
+  ctx.fillText(won?"Those carrots are yours!":"Restart the level and try a new shot.",550,305);
+  ctx.textAlign="left";
+ }
+}
+
+function circleRectHit(x,y,r,b){
+ const cx=Math.max(b.x,Math.min(x,b.x+b.w));
+ const cy=Math.max(b.y,Math.min(y,b.y+b.h));
+ return Math.hypot(x-cx,y-cy)<r;
+}
+
+function hitHawk(h,r){
+ if(!h.alive)return;
+ h.alive=false;
+ r.vx*=.8;r.vy*=.8;
+ const n=randomLine(hawkLines,lastHawkLine);
+ lastHawkLine=n;
+ say(hawkLines[n],"Hawk");
+ statusText.textContent="A hawk has been knocked out!";
+}
+
+function update(dt){
+ const step=Math.min(dt/16.67,2);
+
+ for(const r of rabbits){
+  if(!r.alive||!r.flying)continue;
+
+  r.vy+=G*step;
+  r.x+=r.vx*step;
+  r.y+=r.vy*step;
+  r.vx*=Math.pow(.998,step);
+
+  // Rabbit hits hawks
+  for(const h of hawks){
+   if(h.alive&&Math.hypot(r.x-h.x,r.y-h.y)<r.r+h.r){
+    hitHawk(h,r);
+   }
+  }
+
+  // Rabbit hits wooden beams or carrot decorations
+  for(const b of blocks){
+   if(!b.alive||!circleRectHit(r.x,r.y,r.r,b))continue;
+
+   const impact=Math.hypot(r.vx,r.vy);
+   b.hp-=impact>7?2:1;
+   b.vx+=r.vx*.45;
+   b.vy+=r.vy*.30;
+   b.settled=false;
+
+   if(b.hp<=0)b.alive=false;
+
+   r.vx*=.75;
+   r.vy*=.75;
+
+   if(Math.random()<.35){
+    const n=randomLine(rabbitLines,lastRabbitLine);
+    lastRabbitLine=n;
+    say(rabbitLines[n],"Rabbit");
+   }
+  }
+
+  if(r.y>GROUND-r.r){
+   r.y=GROUND-r.r;
+   r.vy*=-.25;
+   r.vx*=.72;
+   if(Math.abs(r.vy)<1.2)r.vy=0;
+  }
+
+  if(r.x>1150||r.x< -80||r.y>680)r.alive=false;
+ }
+
+ // Basic gravity, floor collision, and block-to-block collisions.
+ for(const b of blocks){
+  if(!b.alive)continue;
+
+  if(!b.settled){
+   b.vy+=G*step;
+   b.x+=b.vx*step;
+   b.y+=b.vy*step;
+   b.angle+=b.vx*.002*step;
+   b.vx*=Math.pow(.99,step);
+
+   if(b.y+b.h>=GROUND){
+    b.y=GROUND-b.h;
+    b.vy*=-.15;
+    b.vx*=.75;
+    if(Math.abs(b.vy)<.8){
+     b.vy=0;b.settled=true;
+    }
+   }
+  }
+ }
+
+ // Detect blocks hit by falling or moving blocks.
+ for(let i=0;i<blocks.length;i++){
+  const a=blocks[i];
+  if(!a.alive)continue;
+
+  for(let j=i+1;j<blocks.length;j++){
+   const b=blocks[j];
+   if(!b.alive)continue;
+
+   const overlapX=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x);
+   const overlapY=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
+
+   if(overlapX>2&&overlapY>2){
+    if(!a.settled){
+     b.vx+=a.vx*.18;
+     b.vy+=Math.max(0,a.vy*.2);
+     b.settled=false;
+    }
+    if(!b.settled){
+     a.vx+=b.vx*.18;
+     a.vy+=Math.max(0,b.vy*.2);
+     a.settled=false;
+    }
+   }
+  }
+ }
+
+ // Hawks are eliminated when hit directly or when a nearby support collapses.
+ for(const h of hawks){
+  if(!h.alive)continue;
+  const supportNearby=blocks.some(b=>
+   b.alive&&Math.abs(b.x+b.w/2-h.x)<48&&
+   Math.abs(b.y+b.h/2-h.y)<35
+  );
+  if(!supportNearby&&Math.random()<.008){
+   h.vy+=G*step;
+   h.y+=h.vy*step;
+   if(h.y>GROUND-20){
+    h.alive=false;
+    say("The tower fell apart!","Hawk");
+   }
+  }
+ }
+
+ if(hawks.every(h=>!h.alive)){
+  won=true;
+  statusText.textContent="All hawks defeated! Click Next Level.";
+  say("Carrot victory! Who's hungry?","Rabbit",3500);
+ }else if(!rabbits.some(r=>r.alive&&!r.flying&&!r.used)&&
+          !rabbits.some(r=>r.alive&&r.flying)&&!won){
+  gameOver=true;
+  statusText.textContent="Out of rabbits! Restart to try again.";
+  say("I need a new plan... and more rabbits.","Rabbit",3000);
+ }
+}
+
+function frame(time){
+ const dt=lastTime?time-lastTime:16.67;
+ lastTime=time;
+ if(!won&&!gameOver)update(dt);
+ draw();
+ requestAnimationFrame(frame);
+}
+
+function pointerPos(e){
+ const rect=canvas.getBoundingClientRect();
+ return {
+  x:(e.clientX-rect.left)*canvas.width/rect.width,
+  y:(e.clientY-rect.top)*canvas.height/rect.height
+ };
+}
+
+canvas.addEventListener("pointerdown",e=>{
+ if(won||gameOver)return;
+ const p=pointerPos(e);
+
+ const r=rabbits.find(r=>
+  r.alive&&!r.flying&&!r.used&&
+  Math.hypot(p.x-r.x,p.y-r.y)<35
+ );
+
+ if(r){
+  active=r;
+  dragging=true;
+  canvas.setPointerCapture(e.pointerId);
+ }
+});
+
+canvas.addEventListener("pointermove",e=>{
+ if(!dragging||!active)return;
+ const p=pointerPos(e);
+ const dx=p.x-SLING.x,dy=p.y-SLING.y;
+ const distance=Math.hypot(dx,dy);
+
+ if(distance>MAX_PULL){
+  active.x=SLING.x+dx/distance*MAX_PULL;
+  active.y=SLING.y+dy/distance*MAX_PULL;
+ }else{
+  active.x=p.x;active.y=p.y;
+ }
+});
+
+function releaseRabbit(){
+ if(!dragging||!active)return;
+
+ dragging=false;
+ const r=active;
+ active=null;
+
+ const dx=SLING.x-r.x;
+ const dy=SLING.y-r.y;
+
+ if(Math.hypot(dx,dy)<8){
+  r.x=SLING.x;r.y=SLING.y;
+  return;
+ }
+
+ r.vx=dx*POWER;
+ r.vy=dy*POWER;
+ r.flying=true;
+ r.used=true;
+ shots++;
+
+ const n=randomLine(rabbitLines,lastRabbitLine);
+ lastRabbitLine=n;
+ say(rabbitLines[n],"Rabbit");
+
+ // Keep a small supply of rabbits for each level.
+ if(!rabbits.some(other=>!other.used)){
+  if(shots<4){
+   rabbits.push({
+    x:SLING.x,y:SLING.y,vx:0,vy:0,r:19,
+    flying:false,alive:true,used:false
+   });
+  }
+ }
+}
+
+canvas.addEventListener("pointerup",releaseRabbit);
+canvas.addEventListener("pointercancel",releaseRabbit);
+
+resetGame();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
